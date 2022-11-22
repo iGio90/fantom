@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Fantom-foundation/go-opera/utils/signers/gsignercache"
+	"github.com/Fantom-foundation/go-opera/utils/signers/internaltx"
+	"github.com/ethereum/go-ethereum/common/math"
 	"math/big"
 	"sync"
 	"time"
@@ -67,6 +70,7 @@ func DefaultConfig() Config {
 // PublicFilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
 // information related to the Ethereum protocol such als blocks, transactions and logs.
 type PublicFilterAPI struct {
+	txpool    TxPool
 	config    Config
 	backend   Backend
 	chainDb   ethdb.Database
@@ -76,8 +80,9 @@ type PublicFilterAPI struct {
 }
 
 // NewPublicFilterAPI returns a new PublicFilterAPI instance.
-func NewPublicFilterAPI(backend Backend, cfg Config) *PublicFilterAPI {
+func NewPublicFilterAPI(txpool TxPool, backend Backend, cfg Config) *PublicFilterAPI {
 	api := &PublicFilterAPI{
+		txpool:  txpool,
 		config:  cfg,
 		backend: backend,
 		chainDb: backend.ChainDb(),
@@ -177,7 +182,13 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 				// To keep the original behaviour, send a single tx hash in one notification.
 				// TODO(rjl493456442) Send a batch of tx hashes in one notification
 				for _, h := range hashes {
-					_ = notifier.Notify(rpcSub.ID, h)
+					if tx := api.txpool.Get(h); tx != nil {
+						tx := newRPCPendingTransaction(tx, api.backend.CurrentBlock().BaseFee)
+						if tx != nil {
+							notifier.Notify(rpcSub.ID, tx)
+						}
+					}
+					//notifier.Notify(rpcSub.ID, h)
 				}
 			case <-rpcSub.Err():
 				pendingTxSub.Unsubscribe()
@@ -190,6 +201,89 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 	}()
 
 	return rpcSub, nil
+}
+
+type RPCTransaction struct {
+	BlockHash        *common.Hash      `json:"blockHash"`
+	BlockNumber      *hexutil.Big      `json:"blockNumber"`
+	From             common.Address    `json:"from"`
+	Gas              hexutil.Uint64    `json:"gas"`
+	GasPrice         *hexutil.Big      `json:"gasPrice"`
+	GasFeeCap        *hexutil.Big      `json:"maxFeePerGas,omitempty"`
+	GasTipCap        *hexutil.Big      `json:"maxPriorityFeePerGas,omitempty"`
+	Hash             common.Hash       `json:"hash"`
+	Input            hexutil.Bytes     `json:"input"`
+	Nonce            hexutil.Uint64    `json:"nonce"`
+	To               *common.Address   `json:"to"`
+	TransactionIndex *hexutil.Uint64   `json:"transactionIndex"`
+	Value            *hexutil.Big      `json:"value"`
+	Type             hexutil.Uint64    `json:"type"`
+	Accesses         *types.AccessList `json:"accessList,omitempty"`
+	ChainID          *hexutil.Big      `json:"chainId,omitempty"`
+	V                *hexutil.Big      `json:"v"`
+	R                *hexutil.Big      `json:"r"`
+	S                *hexutil.Big      `json:"s"`
+}
+
+// newRPCTransaction returns a transaction that will serialize to the RPC
+// representation, with the given location metadata set (if available).
+func newRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber uint64, index uint64, baseFee *big.Int) *RPCTransaction {
+	// Determine the signer. For replay-protected transactions, use the most permissive
+	// signer, because we assume that signers are backwards-compatible with old
+	// transactions. For non-protected transactions, the homestead signer signer is used
+	// because the return value of ChainId is zero for those transactions.
+	var signer types.Signer
+	if tx.Protected() {
+		signer = gsignercache.Wrap(types.LatestSignerForChainID(tx.ChainId()))
+	} else {
+		signer = gsignercache.Wrap(types.HomesteadSigner{})
+	}
+	from, _ := internaltx.Sender(signer, tx)
+	v, r, s := tx.RawSignatureValues()
+	result := &RPCTransaction{
+		Type:     hexutil.Uint64(tx.Type()),
+		From:     from,
+		Gas:      hexutil.Uint64(tx.Gas()),
+		GasPrice: (*hexutil.Big)(tx.GasPrice()),
+		Hash:     tx.Hash(),
+		Input:    hexutil.Bytes(tx.Data()),
+		Nonce:    hexutil.Uint64(tx.Nonce()),
+		To:       tx.To(),
+		Value:    (*hexutil.Big)(tx.Value()),
+		V:        (*hexutil.Big)(v),
+		R:        (*hexutil.Big)(r),
+		S:        (*hexutil.Big)(s),
+	}
+	if blockHash != (common.Hash{}) {
+		result.BlockHash = &blockHash
+		result.BlockNumber = (*hexutil.Big)(new(big.Int).SetUint64(blockNumber))
+		result.TransactionIndex = (*hexutil.Uint64)(&index)
+	}
+	switch tx.Type() {
+	case types.AccessListTxType:
+		al := tx.AccessList()
+		result.Accesses = &al
+		result.ChainID = (*hexutil.Big)(tx.ChainId())
+	case types.DynamicFeeTxType:
+		al := tx.AccessList()
+		result.Accesses = &al
+		result.ChainID = (*hexutil.Big)(tx.ChainId())
+		result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap())
+		result.GasTipCap = (*hexutil.Big)(tx.GasTipCap())
+		// if the transaction has been mined, compute the effective gas price
+		if baseFee != nil && blockHash != (common.Hash{}) {
+			// price = min(tip, gasFeeCap - baseFee) + baseFee
+			price := math.BigMin(new(big.Int).Add(tx.GasTipCap(), baseFee), tx.GasFeeCap())
+			result.GasPrice = (*hexutil.Big)(price)
+		} else {
+			result.GasPrice = (*hexutil.Big)(tx.GasFeeCap())
+		}
+	}
+	return result
+}
+
+func newRPCPendingTransaction(tx *types.Transaction, baseFee *big.Int) *RPCTransaction {
+	return newRPCTransaction(tx, common.Hash{}, 0, 0, baseFee)
 }
 
 // NewBlockFilter creates a filter that fetches blocks that are imported into the chain.

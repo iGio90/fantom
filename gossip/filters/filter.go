@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Fantom-foundation/go-opera/gossip/emitter"
 	"math/big"
 
 	"github.com/Fantom-foundation/lachesis-base/hash"
@@ -36,6 +37,25 @@ import (
 	"github.com/Fantom-foundation/go-opera/topicsdb"
 )
 
+type TxPool interface {
+	emitter.TxPool
+	// AddRemotes should add the given transactions to the pool.
+	AddRemotes([]*types.Transaction) []error
+	AddLocals(txs []*types.Transaction) []error
+	AddLocal(tx *types.Transaction) error
+
+	Get(common.Hash) *types.Transaction
+
+	OnlyNotExisting(hashes []common.Hash) []common.Hash
+	SampleHashes(max int) []common.Hash
+
+	Nonce(addr common.Address) uint64
+	Stats() (int, int)
+	Content() (map[common.Address]types.Transactions, map[common.Address]types.Transactions)
+	ContentFrom(addr common.Address) (types.Transactions, types.Transactions)
+	PendingSlice() types.Transactions
+}
+
 type Backend interface {
 	ChainDb() ethdb.Database
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*evmcore.EvmHeader, error)
@@ -50,6 +70,7 @@ type Backend interface {
 	SubscribeLogsNotify(ch chan<- []*types.Log) notify.Subscription
 
 	EvmLogIndex() *topicsdb.Index
+	CurrentBlock() *evmcore.EvmBlock
 
 	CalcBlockExtApi() bool
 }
