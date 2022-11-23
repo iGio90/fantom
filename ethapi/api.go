@@ -2103,7 +2103,11 @@ func (api *PublicDebugAPI) TraceTransaction(ctx context.Context, hash common.Has
 }
 
 func (api *PublicDebugAPI) TraceCall(ctx context.Context, args TransactionArgs, config *TraceConfig) (interface{}, error) {
-	block := api.b.CurrentBlock()
+	var (
+		err   error
+		block *evmcore.EvmBlock
+	)
+	block = api.b.CurrentBlock()
 
 	//msg, vmctx, statedb, err := api.stateAtTransaction(ctx, block, int(index))
 	statedb, _, err := api.b.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithHash(block.ParentHash, false))
@@ -2121,6 +2125,44 @@ func (api *PublicDebugAPI) TraceCall(ctx context.Context, args TransactionArgs, 
 	}
 
 	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+}
+
+func (api *PublicDebugAPI) TraceCallMany(ctx context.Context, txs []TransactionArgs, config *TraceConfig) (interface{}, error) {
+	var (
+		err   error
+		block *evmcore.EvmBlock
+	)
+	block = api.b.CurrentBlock()
+
+	//msg, vmctx, statedb, err := api.stateAtTransaction(ctx, block, int(index))
+	statedb, _, err := api.b.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithHash(block.ParentHash, false))
+	if err != nil {
+		return nil, err
+	}
+
+	txctx := &tracers.Context{
+		BlockHash: block.Hash,
+	}
+
+	var results = make([]interface{}, len(txs))
+	for idx, args := range txs {
+		// Execute the trace
+		msg, err := args.ToMessage(api.b.RPCGasCap(), block.EvmHeader.BaseFee)
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+		vmctx := api.b.GetBlockContext(block.Header())
+
+		res, err := api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+		results[idx] = res
+	}
+
+	return results, nil
 }
 
 // traceTx configures a new tracer according to the provided configuration, and
