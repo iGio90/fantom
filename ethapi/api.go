@@ -810,10 +810,10 @@ func (s *PublicBlockChainAPI) calculateExtBlockApi(ctx context.Context, blkNumbe
 }
 
 // GetBlockByNumber returns the requested canonical block.
-// * When blockNr is -1 the chain head is returned.
-// * When blockNr is -2 the pending chain head is returned.
-// * When fullTx is true all transactions in the block are returned, otherwise
-//   only the transaction hash is returned.
+//   - When blockNr is -1 the chain head is returned.
+//   - When blockNr is -2 the pending chain head is returned.
+//   - When fullTx is true all transactions in the block are returned, otherwise
+//     only the transaction hash is returned.
 func (s *PublicBlockChainAPI) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber, fullTx bool) (map[string]interface{}, error) {
 	block, err := s.b.BlockByNumber(ctx, number)
 	if block != nil && err == nil {
@@ -2097,6 +2097,27 @@ func (api *PublicDebugAPI) TraceTransaction(ctx context.Context, hash common.Has
 		BlockHash: block.Hash,
 		TxIndex:   int(index),
 		TxHash:    hash,
+	}
+
+	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+}
+
+func (api *PublicDebugAPI) TraceCall(ctx context.Context, args TransactionArgs, config *TraceConfig) (interface{}, error) {
+	block := api.b.CurrentBlock()
+
+	//msg, vmctx, statedb, err := api.stateAtTransaction(ctx, block, int(index))
+	statedb, _, err := api.b.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithHash(block.ParentHash, false))
+	if err != nil {
+		return nil, err
+	}
+	msg, err := args.ToMessage(api.b.RPCGasCap(), block.EvmHeader.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+	vmctx := api.b.GetBlockContext(block.Header())
+
+	txctx := &tracers.Context{
+		BlockHash: block.Hash,
 	}
 
 	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
