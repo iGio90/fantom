@@ -2127,7 +2127,7 @@ func (api *PublicDebugAPI) TraceCall(ctx context.Context, args TransactionArgs, 
 	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
 }
 
-func (api *PublicDebugAPI) TraceCallMany(ctx context.Context, txs []TransactionArgs, config *TraceConfig) (interface{}, error) {
+func (api *PublicDebugAPI) TraceCallMany(ctx context.Context, txs []TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, config *TraceConfig) (interface{}, error) {
 	var (
 		err   error
 		block *evmcore.EvmBlock
